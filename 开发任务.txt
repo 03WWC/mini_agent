@@ -1,0 +1,33 @@
+要求1：从零完成
+  不能依赖现有agent框架（langgraph/openhands/openclaw/PI）完成主流程，
+  允许使用任何 AI 工具辅助开发，但核心 Agent Runtime 需要自行实现。
+
+要求2：实现基本循环
+Loop大致步骤
+  Step one 接收用户输入
+  Step two 判断是直接回复，还是调用工具
+  Step three 调用工具
+  Step four 根据工具结果判断是继续loop，还是返回结果给用户
+工具相关
+    至少实现三个工具
+      calculator
+      search（可 mock）
+      read_docs / todo / weather（可自定义）
+  
+  需实现工具注册机制（每个工具包含名称、描述、参数 Schema），LLM 基于 Schema 自主决策调用。需实现 LLM 输出的解析逻辑，提取思考过程、工具调用或最终答案。
+session管理
+  用户 A 开了窗口 1：让 Agent 查天气记待办
+  用户 A 开了窗口 2：让 Agent 写周报记待办
+  这两个窗口应该是独立的session，用户A可以随时接着窗口1/2和继续聊，彼此不会影响。
+context的有效管理
+  最大轮次限制
+  用户持续的对话，要能记住之前的状态。
+  能支持追问
+    纯对话追问
+    带着工具的追问
+  要如何实现？哪些信息要塞入context更合适？
+    用户输入、工具执行结果、Agent 思考过程等，自行判断。
+  context过长要有基础的压缩，复杂的压缩不用在这里实现。
+额外要求
+  基本异常处理
+  工具调用trace或执行日志

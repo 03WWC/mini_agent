@@ -1,0 +1,15 @@
+# Python 虚拟环境和缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# 本地运行数据和密钥配置
+data/
+.env
+.env.*
+
+# 本地编辑器配置和临时文件
+.vscode/
+image.png
+red.md
