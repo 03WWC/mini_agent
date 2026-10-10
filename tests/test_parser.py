@@ -65,6 +65,23 @@ class ParserTests(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises(ParseError):
                 parse_response(response)
 
+    # 不接受非法 JSON 数字、重复调用 ID 或被截断的回复。
+    def test_rejects_malformed_model_output(self):
+        call = {"id": "same", "type": "function", "function": {
+            "name": "calculator", "arguments": '{"expression":"2+2"}'}}
+        responses = [
+            {"choices": [{"message": {"tool_calls": [call, call]}}]},
+            {"choices": [{"finish_reason": "length", "message": {"content": "回答没说完"}}]},
+        ]
+        for number in ("NaN", "Infinity", "1e999"):
+            responses.append({"choices": [{"message": {"tool_calls": [{
+                "id": "n", "type": "function", "function": {
+                    "name": "test", "arguments": '{"value":' + number + '}'},
+            }]}}]})
+        for response in responses:
+            with self.subTest(response=response), self.assertRaises(ParseError):
+                parse_response(response)
+
 
 if __name__ == "__main__":
     unittest.main()

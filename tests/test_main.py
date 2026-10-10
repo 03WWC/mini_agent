@@ -12,6 +12,23 @@ from agent.store import SQLiteStore
 
 
 class MainTests(unittest.TestCase):
+    # 达到步数上限时，终端仍显示已经执行的工具记录。
+    def test_limit_error_displays_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            response = {"choices": [{"message": {"tool_calls": [{
+                "id": "call-1", "type": "function", "function": {
+                    "name": "calculator", "arguments": '{"expression":"2+2"}'},
+            }]}}]}
+            output = io.StringIO()
+            with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}), \
+                 patch("agent.llm.DeepSeekClient.complete", return_value=response), \
+                 patch("builtins.input", side_effect=["算一下", "/exit"]), redirect_stdout(output):
+                code = main.main(["--user-id", "A", "--db", str(Path(directory) / "test.db"),
+                                  "--max-steps", "1"])
+            self.assertEqual(code, 0)
+            self.assertIn("calculator", output.getvalue())
+            self.assertIn("达到最大", output.getvalue())
+
     # 首次聊天显示会话 ID 和工具记录，重启后可以用同一 ID 继续追问。
     def test_chat_can_resume_saved_session(self):
         with tempfile.TemporaryDirectory() as directory:

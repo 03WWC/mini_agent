@@ -1,0 +1,30 @@
+PS C:\Users\Administrator\Desktop\mini_agent> python main.py --user-id user-A 
+会话 ID: 3b8521d3a50a4503ace315ff0c78243e
+输入 /exit 退出；下次可用 --session-id 继续这个窗口。
+你: 请调用 weather 查询北京模拟天气，再调用 todo 新增待办“带伞”。请简短回答。
+工具: weather({"city": "北京"}) -> ok: {'city': '北京', 'condition': '晴', 'temperature_c': 22, 'source': 'mock'}
+工具: todo({"action": "add", "title": "带伞"}) -> ok: {'todo': {'id': 'c2f54a99af0c4aa7bcf716c61929efc1', 'user_id': 'user-A', 'session_id': '3b8521d3a50a4503ace315ff0c78243e', 'title': '带伞', 'due_at': None, 'status': 'pending', 'created_at': '2026-10-10T06:15:38.671141+00:00', 'updated_at': '2026-10-10T06:15:38.671141+00:00'}}
+助手: 北京模拟天气：晴，22℃。已新增待办「带伞」（状态：待办，无截止时间）。
+你: /exit
+PS C:\Users\Administrator\Desktop\mini_agent> python main.py --user-id user-A  --session-id 3b8521d3a50a4503ace315ff0c78243e
+会话 ID: 3b8521d3a50a4503ace315ff0c78243e
+输入 /exit 退出；下次可用 --session-id 继续这个窗口。
+你: 请调用 todo 列出当前会话的待办，并告诉我刚才查的北京天气。
+工具: todo({"action": "list"}) -> ok: {'todos': [{'id': 'c2f54a99af0c4aa7bcf716c61929efc1', 'user_id': 'user-A', 'session_id': '3b8521d3a50a4503ace315ff0c78243e', 'title': '带伞', 'due_at': None, 'status': 'pending', 'created_at': '2026-10-10T06:15:38.671141+00:00', 'updated_at': '2026-10-10T06:15:38.671141+00:00'}]}
+助手: 当前会话待办：
+
+- 「带伞」— 待办中，无截止时间
+
+刚才查询的北京模拟天气：晴，22℃（模拟数据，非实时天气）。
+你: exit
+助手: 会话结束，再见！如需继续，随时叫我——刚才的待办「带伞」仍保存在待办列表中。
+你: /exit
+PS C:\Users\Administrator\Desktop\mini_agent> python main.py --user-id user-A 
+会话 ID: 23d065a42c6841baad75bf3e2f445c4d
+输入 /exit 退出；下次可用 --session-id 继续这个窗口。
+你: 请调用 todo 列出当前会话的待办。
+工具: todo({"action": "list"}) -> ok: {'todos': []}
+助手: 当前会话的待办列表是空的，没有任何待办事项。
+
+需要我帮你添加一条吗？如果要加，请告诉我标题；如果有截止时间，也请说明具体日期时间（例如「10月12日18:00」），我会按带时区的格式录入。
+你: /exit

@@ -6,6 +6,24 @@ from agent.tools import Tool, ToolRegistry, create_default_registry
 
 
 class ToolTests(unittest.TestCase):
+    # Schema 的嵌套字段、枚举、数值范围和格式约束必须真正执行。
+    def test_nested_schema_and_format_validation(self):
+        registry = ToolRegistry()
+        registry.register(Tool("check", "校验", {
+            "type": "object", "required": ["data"], "additionalProperties": False,
+            "properties": {"data": {"type": "object", "required": ["count", "kind"],
+                "additionalProperties": False, "properties": {
+                    "count": {"type": "integer", "minimum": 1, "maximum": 3},
+                    "kind": {"type": "string", "enum": ["a", "b"]},
+                }}},
+        }, lambda data: data))
+        self.assertEqual(registry.execute("check", {"data": {"count": 2, "kind": "a"}})["count"], 2)
+        for data in ({"count": True, "kind": "a"}, {"count": 4, "kind": "a"},
+                     {"count": 1, "kind": "x"}, {"count": 1},
+                     {"count": 1, "kind": "a", "unexpected": 2}):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                registry.execute("check", {"data": data})
+
     def test_registry_exposes_function_calling_schema(self):
         registry = ToolRegistry()
         registry.register(Tool(

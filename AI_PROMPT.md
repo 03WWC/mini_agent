@@ -6,7 +6,7 @@
 
 普通对话目前**没有固定的全局系统提示词**。`AgentRuntime` 把 `Context.for_llm()` 返回的会话消息和 `ToolRegistry.all_schemas()` 返回的工具 JSON Schema 交给 `DeepSeekClient`。模型请求使用 `tool_choice="auto"`，由模型决定是否调用工具。
 
-四个工具的名称、描述和参数 Schema 在 `agent/tools.py` 中定义。工具说明也是模型做选择时收到的信息，例如 `weather` 的描述明确标注它是模拟天气。工具结果使用对应的 `tool_call_id` 作为 `tool` 消息传回模型。
+四个基础工具的名称、描述和参数 Schema 在 `agent/tools.py` 中定义，`todo` 定义在 `agent/todo.py`，由 Runtime 按当前会话绑定后注册。工具说明也是模型做选择时收到的信息，例如 `weather` 明确标注模拟数据，`todo` 说明各操作必填参数、日期时间格式及信息不明确时要询问用户。工具结果使用对应的 `tool_call_id` 作为 `tool` 消息传回模型。参数和业务约束由代码再次检查。
 
 当会话已有摘要时，`Context` 在原始消息前插入以下系统消息：
 

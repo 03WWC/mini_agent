@@ -1,11 +1,28 @@
-"""工具定义、注册和四个内置工具。"""
+"""工具定义、注册和四个基础工具；todo 在运行时绑定当前会话。"""
 
 import ast
 import json
 import operator
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
+
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+
+
+FORMATS = FormatChecker()
+
+
+# 截止时间必须包含日期、时分秒和时区，同时检查真实日历日期。
+@FORMATS.checks("date-time", raises=ValueError)
+def _valid_datetime(value: Any) -> bool:
+    if not isinstance(value, str):
+        return True
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)", value):
+        return False
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
 
 
 @dataclass
@@ -43,7 +60,18 @@ class ToolRegistry:
             raise ValueError(f"工具重复注册: {tool.name}")
         if tool.parameters.get("type") != "object":
             raise ValueError("工具参数的顶层 Schema 必须是 object")
+        Draft202012Validator.check_schema(tool.parameters)
         self._tools[tool.name] = tool
+
+    # 每次运行创建自己的注册表，待办身份由程序绑定，模型不能传入或修改。
+    def for_session(self, store, user_id: str, session_id: str) -> "ToolRegistry":
+        from .todo import create_todo_tool
+
+        registry = ToolRegistry()
+        for tool in self._tools.values():
+            registry.register(tool)
+        registry.register(create_todo_tool(store, user_id, session_id))
+        return registry
 
     # 根据名称取出工具，找不到时给出明确错误。
     def get(self, name: str) -> Tool:
@@ -79,50 +107,17 @@ class ToolRegistry:
         return self.execute(name, arguments)
 
 
-# 按工具的 Schema 检查必填项、额外参数、类型和字符串长度。
+# 使用标准 JSON Schema 校验，覆盖枚举、格式、嵌套字段和数值范围。
 def _check_arguments(schema: Dict[str, Any], arguments: Any) -> None:
-    """检查本项目用到的基础 JSON Schema 规则。"""
-    if not isinstance(arguments, dict):
-        raise ValueError("工具参数必须是 JSON 对象")
-
-    properties = schema.get("properties", {})
-    for name in schema.get("required", []):
-        if name not in arguments:
-            raise ValueError(f"缺少必需参数: {name}")
-
-    if schema.get("additionalProperties") is False:
-        for name in arguments:
-            if name not in properties:
-                raise ValueError(f"未知参数: {name}")
-
-    # JSON 的 number 不包含布尔值；Python 中 bool 是 int 的子类，所以要单独判断。
-    python_types = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-    }
-    for name, value in arguments.items():
-        rule = properties.get(name, {})
-        expected = rule.get("type")
-        if expected == "null":
-            valid_type = value is None
-        elif expected in python_types:
-            valid_type = isinstance(value, python_types[expected])
-            if expected in ("integer", "number") and isinstance(value, bool):
-                valid_type = False
-        else:
-            valid_type = True
-        if not valid_type:
-            raise ValueError(f"参数 {name} 应为 {expected}")
-
-        if isinstance(value, str):
-            if len(value) < rule.get("minLength", 0):
-                raise ValueError(f"参数 {name} 太短")
-            if "maxLength" in rule and len(value) > rule["maxLength"]:
-                raise ValueError(f"参数 {name} 太长")
+    try:
+        json.dumps(arguments, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("工具参数必须是有效 JSON，不能包含 NaN 或 Infinity") from exc
+    try:
+        Draft202012Validator(schema, format_checker=FORMATS).validate(arguments)
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path) or "参数"
+        raise ValueError(f"{path} 校验失败: {exc.message}") from exc
 
 
 # 只允许这些算术运算。其他 AST 节点（函数调用、变量、属性访问等）会被拒绝。

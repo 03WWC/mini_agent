@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -9,6 +10,33 @@ from agent.store import SQLiteStore
 
 
 class SQLiteStoreTests(unittest.TestCase):
+    # 状态保存到独立列，重启后可以恢复，更新时不影响其他用户。
+    def test_metadata_columns_and_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.db"
+            metadata = {"created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-02T00:00:00+00:00", "status": "failed",
+                        "current_task": "记待办", "run_id": "run-1", "step": 3,
+                        "last_error": "请求超时"}
+            data = {"messages": [{"role": "user", "content": "旧问题"}],
+                    "summary": "旧摘要", "metadata": metadata}
+            store = SQLiteStore(database)
+            store.save("A", "old", data)
+            store.save("B", "old", {"messages": [], "summary": "B"})
+            store = SQLiteStore(database)
+            self.assertEqual(store.load("A", "old"), data)
+            self.assertEqual(store.load("B", "old")["metadata"]["status"], "idle")
+            with closing(sqlite3.connect(database)) as connection:
+                content, status, step = connection.execute(
+                    "SELECT data, status, step FROM sessions WHERE user_id = 'A'").fetchone()
+            self.assertEqual(set(json.loads(content)), {"messages", "summary"})
+            self.assertEqual((status, step), ("failed", 3))
+            data["metadata"]["status"] = "completed"
+            store.save("A", "old", data)
+            self.assertEqual(store.load("A", "old")["metadata"]["status"], "completed")
+            self.assertEqual(store.load("A", "old")["metadata"]["created_at"], metadata["created_at"])
+            self.assertEqual(store.load("B", "old")["metadata"]["status"], "idle")
+
     # 两个窗口使用不同的 session ID，保存和恢复时不能串数据。
     def test_save_and_load_independent_sessions(self):
         with tempfile.TemporaryDirectory() as directory:

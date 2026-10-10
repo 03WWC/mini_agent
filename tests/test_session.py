@@ -7,6 +7,20 @@ from agent.store import SQLiteStore
 
 
 class SessionManagerTests(unittest.TestCase):
+    # 保存时未提供元数据则使用默认状态，恢复后消息和摘要保持不变。
+    def test_session_gets_default_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "sessions.db")
+            store.save("A", "old", {"messages": [{"role": "user", "content": "旧问题"}], "summary": "旧摘要"})
+            manager = SessionManager(store)
+            session = manager.open("A", "old")
+            self.assertEqual(session.metadata["status"], "idle")
+            manager.save(session)
+            loaded = store.load("A", "old")
+            self.assertTrue(loaded["metadata"]["created_at"])
+            self.assertEqual(loaded["summary"], "旧摘要")
+            self.assertEqual(loaded["messages"][0]["content"], "旧问题")
+
     # 同一用户的两个窗口有不同 ID，保存后可以分别恢复和继续聊天。
     def test_two_windows_are_independent_and_resumable(self):
         with tempfile.TemporaryDirectory() as directory:

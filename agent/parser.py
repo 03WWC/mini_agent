@@ -69,6 +69,10 @@ def _parse_tool_call(data: Any) -> ToolCall:
             raise ParseError(f"工具 {name} 的参数不是有效 JSON") from exc
     if not isinstance(arguments, dict):
         raise ParseError(f"工具 {name} 的参数必须是 JSON 对象")
+    try:
+        json.dumps(arguments, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise ParseError(f"工具 {name} 的参数包含无效 JSON 值") from exc
 
     return ToolCall(id=call_id, name=name, arguments=arguments)
 
@@ -83,6 +87,8 @@ def parse_response(response: Dict[str, Any]) -> ParsedResponse:
         raise ParseError("模型返回值缺少 choices")
     if not isinstance(choices[0], dict):
         raise ParseError("choices[0] 格式错误")
+    if choices[0].get("finish_reason") in {"length", "content_filter"}:
+        raise ParseError("模型回复被截断或拦截，不能作为完整结果执行")
     # 获取 message第一条消息，里面可能包含思考、工具调用或最终回答。
     message = choices[0].get("message")
     if not isinstance(message, dict):
@@ -105,6 +111,8 @@ def parse_response(response: Dict[str, Any]) -> ParsedResponse:
             raise ParseError("message.tool_calls 必须是列表")
         if raw_calls:
             calls = [_parse_tool_call(item) for item in raw_calls]
+            if len({call.id for call in calls}) != len(calls):
+                raise ParseError("同一条回复中工具调用 ID 不能重复")
             return ParsedResponse(kind="tool_call", thought=thought,
                                   tool_calls=calls, content=content)
 

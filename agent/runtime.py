@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from .parser import ParseError, parse_response
 from .session import SessionManager
@@ -71,6 +72,32 @@ class AgentRuntime:
             raise ValueError("大模型没有返回对话摘要")
         return parsed.final_answer
 
+    # 恢复中断前尚未回填的工具结果；未知结果只做标记，不自动重放写操作。
+    def _recover_tools(self, session) -> None:
+        pending = {}
+        for message in session.context.messages:
+            for call in message.get("tool_calls", []):
+                pending[call["id"]] = call
+            if message["role"] == "tool":
+                pending.pop(message["tool_call_id"], None)
+        if not pending:
+            return
+        records = {
+            item["call_id"]: item
+            for item in self.sessions.store.tool_history(session.user_id, session.session_id)
+            if item["run_id"] == session.metadata.get("run_id")
+        }
+        for call_id in pending:
+            record = records.get(call_id)
+            if record and record["status"] in {"ok", "error", "unknown"}:
+                result = record["result"]
+            elif record:
+                result = "上次执行中断，结果未知。不要自动重复写入，请先查询当前业务状态。"
+                self.sessions.store.finish_tool(record["id"], "unknown", result)
+            else:
+                result = "上次执行中断，此调用尚未开始执行。"
+            session.context.add_tool_result(call_id, result)
+
     # 处理一条用户消息；模型可直接回答，也可调用工具后继续思考。
     def run(self, user_id: str, text: str,
             session_id: str | None = None) -> RunResult:
@@ -79,16 +106,23 @@ class AgentRuntime:
 
         session = (self.sessions.open(user_id, session_id) if session_id is not None
                    else self.sessions.create(user_id))
+        tools = self.tools.for_session(self.sessions.store, user_id, session.session_id)
+        self._recover_tools(session)
         context = session.context
         # Step one：接收用户输入，加入当前会话的上下文。
         context.add_user(text)
         trace: List[ToolTrace] = []
+        run_id = uuid4().hex
+        session.metadata.update(status="running", current_task=text, run_id=run_id,
+                                step=0, last_error=None)
+        self.sessions.save(session)
 
         try:
             for step in range(1, self.max_steps + 1):
+                session.metadata["step"] = step
                 # Step two：把上下文和工具说明交给模型，判断直接回复还是调用工具。
                 response = self.client.complete(
-                    context.for_llm(self._summarize), self.tools.all_schemas()
+                    context.for_llm(self._summarize), tools.all_schemas()
                 )
                 try:
                     parsed = parse_response(response)
@@ -99,6 +133,7 @@ class AgentRuntime:
                 if parsed.kind == "final":
                     context.add_assistant(parsed.final_answer,
                                           reasoning_content=parsed.thought)
+                    session.metadata["status"] = "completed"
                     return RunResult(parsed.final_answer, session.session_id, trace)
 
                 if parsed.kind == "thought":
@@ -107,10 +142,14 @@ class AgentRuntime:
 
                 context.add_assistant(parsed.content, parsed.tool_calls,
                                       reasoning_content=parsed.thought)
+                self.sessions.save(session)
                 # Step three：执行模型选择的工具，记录结果和错误。
                 for call in parsed.tool_calls:
+                    execution_id = self.sessions.store.start_tool(
+                        user_id, session.session_id, run_id, step, call.id, call.name, call.arguments)
                     try:
-                        result = self.tools.execute(call.name, call.arguments)
+                        result = tools.execute(call.name, call.arguments)
+                        json.dumps(result, ensure_ascii=False, allow_nan=False)
                         status = "ok"
                     except Exception as exc:
                         result = f"工具执行失败: {exc}"
@@ -118,12 +157,19 @@ class AgentRuntime:
 
                     trace.append(ToolTrace(step, call.name, call.arguments,
                                            status, result))
+                    self.sessions.store.finish_tool(execution_id, status, result)
                     context.add_tool_result(call.id, result)
+                    self.sessions.save(session)
 
                 # Step four：带着工具结果继续循环，由模型决定继续调用工具还是返回答案。
 
             raise AgentRunError(f"达到最大模型调用次数: {self.max_steps}",
                                 session.session_id, trace)
+        except Exception as exc:
+            session.metadata.update(status="failed", last_error=str(exc))
+            if isinstance(exc, AgentRunError):
+                raise
+            raise AgentRunError(str(exc), session.session_id, trace) from exc
         finally:
             # 即使模型或工具失败，也保存本次已经产生的对话。
             self.sessions.save(session)

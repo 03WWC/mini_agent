@@ -18,7 +18,10 @@ class FakeLLM:
     # 模拟模型返回的 Chat Completions 结构。
     def complete(self, messages, tools):
         self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
-        return {"choices": [{"message": self.messages.pop(0)}]}
+        message = self.messages.pop(0)
+        if isinstance(message, Exception):
+            raise message
+        return {"choices": [{"message": message}]}
 
 
 class RuntimeTests(unittest.TestCase):
@@ -139,6 +142,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("之前查过北京天气", llm.requests[2][0][0]["content"])
         self.assertEqual(self.sessions.open("user-A", first.session_id).context.summary,
                          "之前查过北京天气")
+
+    # 一个回复中的多个工具都执行；重启后的工具追问能查到自己的待办。
+    def test_weather_and_todo_follow_up_after_restart(self):
+        llm = FakeLLM([
+            {"content": None, "tool_calls": [
+                {"id": "weather-1", "type": "function", "function": {
+                    "name": "weather", "arguments": '{"city":"北京"}'}},
+                {"id": "todo-1", "type": "function", "function": {
+                    "name": "todo", "arguments": '{"action":"add","title":"带伞"}'}},
+            ]}, {"content": "已查询天气并记录带伞"},
+        ])
+        result = AgentRuntime(llm, self.tools, self.sessions).run("A", "查北京天气并记待办带伞")
+        self.assertEqual([item.name for item in result.trace], ["weather", "todo"])
+        self.assertEqual([item["tool_call_id"] for item in llm.requests[1][0] if item["role"] == "tool"],
+                         ["weather-1", "todo-1"])
+        reopened = SessionManager(SQLiteStore(self.sessions.store.database_path))
+        follow_up = FakeLLM([
+            {"content": None, "tool_calls": [{"id": "list-1", "type": "function", "function": {
+                "name": "todo", "arguments": '{"action":"list"}'}}]},
+            {"content": "你的待办是带伞"},
+        ])
+        answer = AgentRuntime(follow_up, self.tools, reopened).run("A", "还有什么待办？", result.session_id)
+        self.assertEqual(answer.trace[0].result["todos"][0]["title"], "带伞")
+        saved = reopened.open("A", result.session_id)
+        self.assertEqual(saved.metadata["status"], "completed")
+        self.assertTrue(saved.metadata["created_at"])
+        self.assertEqual(saved.metadata["current_task"], "还有什么待办？")
+        logs = reopened.store.tool_history("A", result.session_id)
+        self.assertEqual(len(logs), 3)
+        self.assertTrue(all(item["status"] == "ok" for item in logs))
+        self.assertEqual(reopened.store.tool_history("B", result.session_id), [])
+
+    # 写工具成功后模型超时，业务数据、错误状态和执行日志仍然保存。
+    def test_failure_preserves_task_and_tool_history(self):
+        llm = FakeLLM([
+            {"content": None, "tool_calls": [{"id": "todo-1", "type": "function", "function": {
+                "name": "todo", "arguments": '{"action":"add","title":"交周报"}'}}]},
+            TimeoutError("请求超时"),
+        ])
+        with self.assertRaises(AgentRunError) as caught:
+            AgentRuntime(llm, self.tools, self.sessions).run("A", "记待办交周报")
+        saved = self.sessions.open("A", caught.exception.session_id)
+        self.assertEqual(saved.metadata["status"], "failed")
+        self.assertIn("请求超时", saved.metadata["last_error"])
+        self.assertEqual(self.sessions.store.tool_history("A", saved.session_id)[0]["status"], "ok")
+        bound = self.tools.for_session(self.sessions.store, "A", saved.session_id)
+        self.assertEqual(len(bound.execute("todo", {"action": "list"})["todos"]), 1)
+
+    # 工具结果已写日志但还没回填消息时中断，恢复时直接使用已保存的结果。
+    def test_recover_pending_call_from_execution_log(self):
+        from agent.parser import ToolCall
+
+        session = self.sessions.create("A")
+        session.metadata.update(status="running", run_id="run-1")
+        session.context.add_user("2+2")
+        session.context.add_assistant(tool_calls=[ToolCall("call-1", "calculator", {"expression": "2+2"})])
+        self.sessions.save(session)
+        execution_id = self.sessions.store.start_tool("A", session.session_id, "run-1", 1,
+                                                       "call-1", "calculator", {"expression": "2+2"})
+        self.sessions.store.finish_tool(execution_id, "ok", 4)
+        llm = FakeLLM([{"content": "之前算出 4"}])
+        result = AgentRuntime(llm, self.tools, self.sessions).run("A", "继续", session.session_id)
+        self.assertEqual(result.trace, [])
+        self.assertIn({"role": "tool", "tool_call_id": "call-1", "content": "4"}, llm.requests[0][0])
+        self.assertEqual(len(self.sessions.store.tool_history("A", session.session_id)), 1)
+
+    # 中断时未确认的写操作只标记未知，不重新执行。
+    def test_unknown_write_is_not_replayed(self):
+        from agent.parser import ToolCall
+
+        session = self.sessions.create("A")
+        session.metadata.update(status="running", run_id="run-unknown")
+        session.context.add_user("记待办")
+        arguments = {"action": "add", "title": "带伞"}
+        session.context.add_assistant(tool_calls=[ToolCall("todo-unknown", "todo", arguments)])
+        self.sessions.save(session)
+        self.sessions.store.start_tool("A", session.session_id, "run-unknown", 1,
+                                       "todo-unknown", "todo", arguments)
+        llm = FakeLLM([{"content": "请先确认上次执行结果"}])
+        result = AgentRuntime(llm, self.tools, self.sessions).run("A", "继续", session.session_id)
+        self.assertEqual(result.trace, [])
+        history = self.sessions.store.tool_history("A", session.session_id)
+        self.assertEqual(history[0]["status"], "unknown")
+        self.assertIn("结果未知", llm.requests[0][0][2]["content"])
+        bound = self.tools.for_session(self.sessions.store, "A", session.session_id)
+        self.assertEqual(bound.execute("todo", {"action": "list"})["todos"], [])
 
 
 if __name__ == "__main__":
